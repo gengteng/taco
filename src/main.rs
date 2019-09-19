@@ -22,10 +22,13 @@ async fn main() -> Result<(), Exception> {
     let mut listener = TcpListener::bind(&addr).await?;
     println!("Listening on: {}", addr);
 
-    while let Ok((stream, _addr)) = listener.accept().await {
+    while let Ok((stream, remote_addr)) = listener.accept().await {
         tokio::spawn(async move {
             if let Err(e) = process(stream).await {
-                println!("failed to process connection; error = {}", e);
+                println!(
+                    "failed to process connection from {}; error = {}",
+                    remote_addr, e
+                );
             }
         });
     }
