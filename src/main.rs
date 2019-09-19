@@ -1,16 +1,13 @@
 use bytes::BytesMut;
 use futures::{SinkExt, StreamExt};
-use http::{header::HeaderValue, Request, Response, StatusCode, Method};
-use serde_derive::{
-    Serialize,
-    Deserialize
-};
+use http::header::CONTENT_LENGTH;
+use http::{header::HeaderValue, Method, Request, Response, StatusCode};
+use serde_derive::{Deserialize, Serialize};
 use std::{env, error::Error, fmt, io};
 use tokio::{
     codec::{Decoder, Encoder, Framed},
     net::{TcpListener, TcpStream},
 };
-use http::header::CONTENT_LENGTH;
 
 type Exception = Box<dyn Error + Sync + Send + 'static>;
 
@@ -18,7 +15,9 @@ type Exception = Box<dyn Error + Sync + Send + 'static>;
 async fn main() -> Result<(), Exception> {
     // Parse the arguments, bind the TCP socket we'll be listening to, spin up
     // our worker threads, and start shipping sockets to those worker threads.
-    let addr = env::args().nth(1).unwrap_or("127.0.0.1:8080".to_string());
+    let addr = env::args()
+        .nth(1)
+        .unwrap_or_else(|| "127.0.0.1:8080".to_string());
 
     let mut listener = TcpListener::bind(&addr).await?;
     println!("Listening on: {}", addr);
@@ -111,7 +110,7 @@ impl Encoder for Http {
             item.body().len(),
             date::now()
         )
-            .unwrap();
+        .unwrap();
 
         for (k, v) in item.headers() {
             dst.extend_from_slice(k.as_str().as_bytes());
@@ -188,10 +187,7 @@ impl Decoder for Http {
             )
         };
         if version != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "only HTTP/1.1 accepted",
-            ).into());
+            return Err(io::Error::new(io::ErrorKind::Other, "only HTTP/1.1 accepted").into());
         }
         let data = src.split_to(amt).freeze();
         let mut ret = Request::builder();
@@ -208,18 +204,18 @@ impl Decoder for Http {
         }
 
         match ret.headers_ref() {
-            Some(headers_ref) => {
-                match headers_ref.get(CONTENT_LENGTH) {
-                    Some(length) => {
-                        let body_len: usize = length.to_str()?.parse()?;
-                        let body = src.split_to(body_len).freeze();
-                        Ok(Some(ret.body(String::from_utf8(body.to_vec())?)
-                            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?))
-                    }
-                    None => Ok(Some(ret.body(String::new())?))
+            Some(headers_ref) => match headers_ref.get(CONTENT_LENGTH) {
+                Some(length) => {
+                    let body_len: usize = length.to_str()?.parse()?;
+                    let body = src.split_to(body_len).freeze();
+                    Ok(Some(
+                        ret.body(String::from_utf8(body.to_vec())?)
+                            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
+                    ))
                 }
-            }
-            None => Ok(Some(ret.body(String::new())?))
+                None => Ok(Some(ret.body(String::new())?)),
+            },
+            None => Ok(Some(ret.body(String::new())?)),
         }
     }
 }
@@ -317,49 +313,45 @@ enum Command {
     Delay {
         base: Millisecond,
         range: Option<Millisecond>,
-        percentage: Option<Percentage>
+        percentage: Option<Percentage>,
     },
     #[serde(rename = "loss")]
     Loss {
         base: Percentage,
-        rate: Option<Percentage>
+        rate: Option<Percentage>,
     },
     #[serde(rename = "duplicate")]
-    Duplicate {
-        base: Percentage
-    },
+    Duplicate { base: Percentage },
     #[serde(rename = "reorder")]
-    Reorder{
+    Reorder {
         base: Percentage,
-        related: Option<Percentage>
+        related: Option<Percentage>,
     },
     #[serde(rename = "corrupt")]
-    Corrupt{
-        base: Percentage
-    },
+    Corrupt { base: Percentage },
     #[serde(rename = "show")]
-    Show
+    Show,
 }
 
 #[derive(Serialize)]
 struct Message {
     ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>
+    message: Option<String>,
 }
 
 impl Message {
     fn ok() -> Self {
         Message {
             ok: true,
-            message: None
+            message: None,
         }
     }
 
     fn err(message: String) -> Self {
         Message {
             ok: false,
-            message: Some(message)
+            message: Some(message),
         }
     }
 }
