@@ -1,30 +1,40 @@
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures::{SinkExt, StreamExt};
-use http::header::CONTENT_LENGTH;
+use http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use http::{header::HeaderValue, Method, Request, Response, StatusCode};
 use serde_derive::{Deserialize, Serialize};
-use std::{env, error::Error, fmt, io};
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::{error::Error, fmt, io};
+use structopt::StructOpt;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
 use tokio::{
     codec::{Decoder, Encoder, Framed},
     net::{TcpListener, TcpStream},
 };
+use tokio_net::process;
 
 type Exception = Box<dyn Error + Sync + Send + 'static>;
 
 #[tokio::main]
 async fn main() -> Result<(), Exception> {
-    // Parse the arguments, bind the TCP socket we'll be listening to, spin up
-    // our worker threads, and start shipping sockets to those worker threads.
-    let addr = env::args()
-        .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:8080".to_string());
+    let opts: WeoOpts = WeoOpts::from_args();
 
-    let mut listener = TcpListener::bind(&addr).await?;
-    println!("Listening on: {}", addr);
+    println!("{:?}", opts);
+
+    let addr4 = SocketAddr::from(([0, 0, 0, 0], opts.port));
+
+    let mut listener = TcpListener::bind(addr4).await?;
+    println!("Listening on: {}", opts.port);
+
+    let opts = Arc::new(opts);
 
     while let Ok((stream, remote_addr)) = listener.accept().await {
+        let opts = opts.clone();
         tokio::spawn(async move {
-            if let Err(e) = process(stream).await {
+            if let Err(e) = process(stream, opts.clone()).await {
                 println!(
                     "failed to process connection from {}; error = {}",
                     remote_addr, e
@@ -36,13 +46,13 @@ async fn main() -> Result<(), Exception> {
     Ok(())
 }
 
-async fn process(stream: TcpStream) -> Result<(), Exception> {
+async fn process(stream: TcpStream, opts: Arc<WeoOpts>) -> Result<(), Exception> {
     let mut transport = Framed::new(stream, Http);
 
     while let Some(request) = transport.next().await {
         match request {
             Ok(request) => {
-                let response = respond(request).await?;
+                let response = respond(request, opts.clone()).await?;
                 transport.send(response).await?;
             }
             Err(e) => return Err(e),
@@ -52,35 +62,73 @@ async fn process(stream: TcpStream) -> Result<(), Exception> {
     Ok(())
 }
 
-async fn respond(req: Request<String>) -> Result<Response<String>, Exception> {
+async fn respond(req: Request<String>, opts: Arc<WeoOpts>) -> Result<Response<Bytes>, Exception> {
     let mut response = Response::builder();
 
     let body = match (req.method(), req.uri().path()) {
         (&Method::POST, "/api") => {
-            response.header("Content-Type", "application/json");
+            response.header(CONTENT_TYPE, mime::APPLICATION_JSON.as_ref());
 
             let deserialize: Result<Vec<Command>, _> = serde_json::from_str(req.body());
 
             match deserialize {
                 Ok(vec) => {
-                    let cmds = Commands(vec);
+                    let commands = Commands(vec);
 
-                    cmds.execute().await?;
+                    commands.execute(&opts.eth).await?;
 
-                    serde_json::to_string(&Message::ok())?
+                    serde_json::to_string(&Message::ok())?.into()
                 }
                 Err(e) => {
                     serde_json::to_string(&Message::err(format!("deserialize error: {}", e)))?
+                        .into()
                 }
             }
         }
-        (&Method::GET, _) => {
-            response.status(StatusCode::BAD_REQUEST);
-            String::new()
+
+        (&Method::GET, path) => {
+            let path = if path.is_empty() || path == "/" {
+                opts.root.join("index.html")
+            } else {
+                opts.root.join(&path[1..])
+            };
+
+            if let Some(ext) = path.extension() {
+                match ext.to_str() {
+                    Some("js") => {
+                        response.header(CONTENT_TYPE, mime::APPLICATION_JAVASCRIPT.as_ref());
+                    }
+                    Some("css") => {
+                        response.header(CONTENT_TYPE, mime::TEXT_CSS.as_ref());
+                    }
+                    Some("html") | Some("htm") => {
+                        response.header(CONTENT_TYPE, mime::TEXT_HTML_UTF_8.as_ref());
+                    }
+
+                    Some("ico") => {
+                        response.header(CONTENT_TYPE, "image/vnd.microsoft.icon");
+                    }
+                    _ => {}
+                }
+            }
+
+            let open = File::open(path).await;
+
+            match open {
+                Ok(mut file) => {
+                    let mut content = Vec::with_capacity(file.metadata().await?.len() as usize);
+                    file.read_to_end(&mut content).await?;
+                    Bytes::from(content)
+                }
+                Err(_) => {
+                    response.status(StatusCode::NOT_FOUND);
+                    Bytes::new()
+                }
+            }
         }
         _ => {
             response.status(StatusCode::NOT_FOUND);
-            String::new()
+            Bytes::new()
         }
     };
     let response = response
@@ -95,25 +143,27 @@ struct Http;
 /// Implementation of encoding an HTTP response into a `BytesMut`, basically
 /// just writing out an HTTP/1.1 response.
 impl Encoder for Http {
-    type Item = Response<String>;
-    type Error = io::Error;
+    type Item = Response<Bytes>;
+    type Error = Exception;
 
-    fn encode(&mut self, item: Response<String>, dst: &mut BytesMut) -> io::Result<()> {
+    fn encode(&mut self, item: Response<Bytes>, dst: &mut BytesMut) -> Result<(), Exception> {
         use std::fmt::Write;
 
         write!(
             BytesWrite(dst),
             "\
              HTTP/1.1 {}\r\n\
-             Server: Example\r\n\
+             Server: weo\r\n\
              Content-Length: {}\r\n\
+             Accept-Ranges: bytes\r\n\
+             Access-Control-Allow-Origin: *\r\n\
+             Connection: keep-alive\r\n\
              Date: {}\r\n\
              ",
             item.status(),
             item.body().len(),
             date::now()
-        )
-        .unwrap();
+        )?;
 
         for (k, v) in item.headers() {
             dst.extend_from_slice(k.as_str().as_bytes());
@@ -123,7 +173,7 @@ impl Encoder for Http {
         }
 
         dst.extend_from_slice(b"\r\n");
-        dst.extend_from_slice(item.body().as_bytes());
+        dst.extend_from_slice(item.body().as_ref());
 
         return Ok(());
 
@@ -306,6 +356,19 @@ mod date {
     }
 }
 
+#[derive(Debug, StructOpt)]
+#[structopt(name = "weo", about = "A simple WAN emulator in Rust.")]
+struct WeoOpts {
+    #[structopt(short = "p", long, value_name = "PORT", default_value = "81")]
+    port: u16,
+
+    #[structopt(short = "r", long, value_name = "WEBROOT", parse(from_os_str))]
+    root: PathBuf,
+
+    #[structopt(short = "e", value_name = "ETH", long)]
+    eth: String,
+}
+
 type Percentage = u8;
 type Millisecond = u64;
 
@@ -363,8 +426,25 @@ impl Message {
 struct Commands(Vec<Command>);
 
 impl Commands {
-    async fn execute(&self) -> Result<(), Exception> {
-        println!("execute {:?}", self);
-        Ok(())
+    async fn execute(&self, eth: &str) -> Result<Message, Exception> {
+        println!("execute {:?} on dev {}", self, eth);
+        let status = process::Command::new("tc")
+            .args(self.to_args())
+            .status()
+            .await?;
+        match status.code() {
+            Some(code) => {
+                if code == 0 {
+                    Ok(Message::ok())
+                } else {
+                    Ok(Message::err(format!("Exit with status code: {}", code)))
+                }
+            }
+            None => Ok(Message::err("Process killed by signal".to_owned())),
+        }
+    }
+
+    fn to_args(&self) -> &[&str] {
+        &[]
     }
 }
