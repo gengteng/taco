@@ -17,15 +17,13 @@ use opt::*;
 mod error;
 mod proto;
 use error::*;
-mod command;
-use command::*;
+mod netem;
+use netem::*;
 mod utils;
 use utils::*;
 
 #[tokio::main]
 async fn main() -> WeoResult<()> {
-    fuck();
-
     let opts: WeoOpts = WeoOpts::from_args();
 
     println!("{:?}", opts);
@@ -77,18 +75,15 @@ async fn respond(req: Request<String>, opts: Arc<WeoOpts>) -> WeoResult<Response
         (&Method::POST, "/api") => {
             response.header(CONTENT_TYPE, mime::APPLICATION_JSON.as_ref());
 
-            let deserialize: Result<Tc, _> = serde_json::from_str(req.body());
+            let deserialize: Result<NetEm, _> = serde_json::from_str(req.body());
 
             match deserialize {
-                Ok(tc) => {
-                    tc.execute().await?;
-
-                    serde_json::to_string(&Message::ok())?.into()
-                }
-                Err(e) => {
-                    serde_json::to_string(&Message::err(format!("deserialize error: {}", e)))?
-                        .into()
-                }
+                Ok(tc) => serde_json::to_string(&tc.execute().await)?.into(),
+                Err(e) => serde_json::to_string(&Message::err_server(format!(
+                    "deserialize error: {}",
+                    e
+                )))?
+                .into(),
             }
         }
 
