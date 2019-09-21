@@ -412,7 +412,7 @@ pub enum Message {
     Ok,
     #[serde(rename = "error")]
     Error { description: String, server: bool },
-    #[serde(rename = "date")]
+    #[serde(rename = "data")]
     Data { interfaces: Vec<String> },
 }
 
