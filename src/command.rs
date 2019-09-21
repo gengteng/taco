@@ -260,13 +260,30 @@ impl Tc {
                     return Err("to use reordering, a delay option must be specified".into());
                 }
 
-                Ok(vec![]) // TODO
+                // tc qdisc replace dev <INTERFACE> root netem delay 100ms 10ms loss 1% 30% duplicate 1% reorder 10% 50% corrupt 0.2%
+                let mut args = vec![
+                    "qdisc".into(),
+                    "replace".into(),
+                    "dev".into(),
+                    interface.into(),
+                    "root".into(),
+                    "netem".into(),
+                ];
+
+                args.append(&mut controls.to_args());
+
+                Ok(args)
             }
-            Tc::Show { interface } => {
-                match interface {
-                    Some(i) => {
+            Tc::Show { interface: if_op } => {
+                match if_op {
+                    Some(interface) => {
                         // tc qdisc show dev <INTERFACE>
-                        Ok(vec!["qdisc".into(), "show".into(), "dev".into(), i.into()])
+                        Ok(vec![
+                            "qdisc".into(),
+                            "show".into(),
+                            "dev".into(),
+                            interface.into(),
+                        ])
                     }
                     None => {
                         // tc qdisc show
@@ -322,23 +339,27 @@ pub fn fuck() {
             }),
             ..Default::default()
         },
-        interface: "eth0".to_owned(),
+        interface: "br-lan".to_owned(),
     };
 
     let show = Tc::Show {
-        interface: Some("test".into()),
+        interface: Some("br-lan".into()),
     };
 
     let show_all = Tc::Show { interface: None };
 
     let reset = Tc::Reset {
-        interface: "fdsa".into(),
+        interface: "br-lan".into(),
     };
 
     println!("{}", serde_json::to_string(&control).unwrap());
+    println!("{}", control.get_args().unwrap_or_else(|_| Vec::new()).join(" "));
     println!("{}", serde_json::to_string(&show).unwrap());
+    println!("{}", show.get_args().unwrap_or_else(|_| Vec::new()).join(" "));
     println!("{}", serde_json::to_string(&show_all).unwrap());
+    println!("{}", show_all.get_args().unwrap_or_else(|_| Vec::new()).join(" "));
     println!("{}", serde_json::to_string(&reset).unwrap());
+    println!("{}", reset.get_args().unwrap_or_else(|_| Vec::new()).join(" "));
 
     std::process::exit(0);
 }
