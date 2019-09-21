@@ -70,15 +70,13 @@ async fn respond(req: Request<String>, opts: Arc<WeoOpts>) -> WeoResult<Response
     let mut response = Response::builder();
 
     let body = match (req.method(), req.uri().path()) {
-        (&Method::POST, "/show") => Bytes::new(),
-        (&Method::POST, "/reset") => Bytes::new(),
         (&Method::POST, "/api") => {
             response.header(CONTENT_TYPE, mime::APPLICATION_JSON.as_ref());
 
             let deserialize: Result<NetEm, _> = serde_json::from_str(req.body());
 
             match deserialize {
-                Ok(tc) => serde_json::to_string(&tc.execute().await)?.into(),
+                Ok(netem) => serde_json::to_string(&netem.execute().await)?.into(),
                 Err(e) => serde_json::to_string(&Message::err_server(format!(
                     "deserialize error: {}",
                     e
@@ -86,7 +84,6 @@ async fn respond(req: Request<String>, opts: Arc<WeoOpts>) -> WeoResult<Response
                 .into(),
             }
         }
-
         (&Method::GET, path) => {
             let path = if path.is_empty() || path == "/" {
                 opts.root.join("index.html")

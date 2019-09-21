@@ -430,7 +430,6 @@ impl Message {
             server: false,
         }
     }
-
 }
 
 #[test]
