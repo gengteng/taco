@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate lazy_static;
+
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use http::header::CONTENT_TYPE;

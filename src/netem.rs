@@ -7,12 +7,14 @@
 /// interface. NetEm is built using the existing Quality Of Service (QOS)
 /// and Differentiated Services (diffserv) facilities in the Linux
 /// kernel.
-use crate::error::WeoResult;
+use crate::error::Exception;
+use regex::Regex;
 use serde_derive::{Deserialize, Serialize};
+use std::str::FromStr;
 use tokio_net::process::Command as PsCommand;
 
 type Percentage = f64;
-type Millisecond = u64;
+type Millisecond = f64;
 
 trait ToPercentageString {
     fn to_pct_string(&self) -> String;
@@ -44,7 +46,7 @@ trait Control {
 }
 
 /// LIMIT := limit packets
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 struct Limit {
     packets: i32,
 }
@@ -55,7 +57,29 @@ impl Control for Limit {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+lazy_static! {
+    static ref LIMIT_REGEX: Regex = Regex::new(r"limit\s(?P<packets>[-\d]+)").unwrap();
+}
+
+impl FromStr for Limit {
+    type Err = Exception;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(captures) = LIMIT_REGEX.captures(s) {
+            let packets: i32 = captures
+                .name("packets")
+                .ok_or("get limit packets error")?
+                .as_str()
+                .parse()?;
+
+            Ok(Limit { packets })
+        } else {
+            Err("no limit".into())
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq)]
 enum Distribution {
     #[serde(rename = "uniform")]
     Uniform,
@@ -81,7 +105,7 @@ impl From<Distribution> for String {
 
 /// DELAY := delay TIME [ JITTER [ CORRELATION ]]]
 ///        [ distribution { uniform | normal | pareto |  paretonormal } ]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct Delay {
     time: Millisecond,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -115,10 +139,56 @@ impl Control for Delay {
     }
 }
 
+lazy_static! {
+    static ref DELAY_REGEX: Regex = Regex::new(
+        r"delay\s(?P<time>[\d\.]+)ms(\s{2}(?P<jitter>[\d\.]+)ms\s((?P<correlation>[\d\.]+)%)?)?"
+    )
+    .unwrap();
+}
+
+impl FromStr for Delay {
+    type Err = Exception;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(captures) = DELAY_REGEX.captures(s) {
+            let time: Millisecond = captures
+                .name("time")
+                .ok_or("get delay time error")?
+                .as_str()
+                .parse()?;
+
+            let jitter: Option<Millisecond> = match captures.name("jitter") {
+                Some(s) => s.as_str().parse().ok(),
+                None => None,
+            };
+
+            let correlation: Option<Percentage> = if jitter.is_some() {
+                match captures.name("correlation") {
+                    Some(s) => s.as_str().parse().ok(),
+                    None => None,
+                }
+            } else {
+                None
+            };
+
+            // TODO: distribution
+
+            Ok(Delay {
+                time,
+                jitter,
+                correlation,
+                distribution: None,
+            })
+        } else {
+            Err("no delay".into())
+        }
+    }
+}
+
 /// LOSS := loss { random PERCENT [ CORRELATION ]  |
 ///                state p13 [ p31 [ p32 [ p23 [ p14]]]] |
 ///                gemodel p [ r [ 1-h [ 1-k ]]] }  [ ecn ]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct Loss {
     percent: Percentage,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -148,8 +218,43 @@ impl Control for Loss {
     }
 }
 
+lazy_static! {
+    static ref LOSS_REGEX: Regex =
+        Regex::new(r"loss\s(?P<percent>[\d\.]+)%(\s(?P<correlation>[\d\.]+)%)?(.*\s(?P<ecn>ecn))?")
+            .unwrap();
+}
+
+impl FromStr for Loss {
+    type Err = Exception;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(captures) = LOSS_REGEX.captures(s) {
+            let percent: Percentage = captures
+                .name("percent")
+                .ok_or("get loss percent error")?
+                .as_str()
+                .parse()?;
+
+            let correlation: Option<Percentage> = match captures.name("correlation") {
+                Some(s) => s.as_str().parse().ok(),
+                None => None,
+            };
+
+            let ecn = captures.name("ecn").is_some();
+
+            Ok(Loss {
+                percent,
+                correlation,
+                ecn,
+            })
+        } else {
+            Err("no loss".into())
+        }
+    }
+}
+
 /// CORRUPT := corrupt PERCENT [ CORRELATION ]]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct Corrupt {
     percent: Percentage,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -171,8 +276,39 @@ impl Control for Corrupt {
     }
 }
 
+lazy_static! {
+    static ref CORRUPT_REGEX: Regex =
+        Regex::new(r"corrupt\s(?P<percent>[\d\.]+)%(\s(?P<correlation>[\d\.]+)%)?").unwrap();
+}
+
+impl FromStr for Corrupt {
+    type Err = Exception;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(captures) = CORRUPT_REGEX.captures(s) {
+            let percent: Percentage = captures
+                .name("percent")
+                .ok_or("get corrupt percent error")?
+                .as_str()
+                .parse()?;
+
+            let correlation: Option<Percentage> = match captures.name("correlation") {
+                Some(s) => s.as_str().parse().ok(),
+                None => None,
+            };
+
+            Ok(Corrupt {
+                percent,
+                correlation,
+            })
+        } else {
+            Err("no corrupt".into())
+        }
+    }
+}
+
 /// DUPLICATION := duplicate PERCENT [ CORRELATION ]]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct Duplicate {
     percent: Percentage,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -194,8 +330,39 @@ impl Control for Duplicate {
     }
 }
 
+lazy_static! {
+    static ref DUPLICATE_REGEX: Regex =
+        Regex::new(r"duplicate\s(?P<percent>[\d\.]+)%(\s(?P<correlation>[\d\.]+)%)?").unwrap();
+}
+
+impl FromStr for Duplicate {
+    type Err = Exception;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(captures) = DUPLICATE_REGEX.captures(s) {
+            let percent: Percentage = captures
+                .name("percent")
+                .ok_or("get duplicate percent error")?
+                .as_str()
+                .parse()?;
+
+            let correlation: Option<Percentage> = match captures.name("correlation") {
+                Some(s) => s.as_str().parse().ok(),
+                None => None,
+            };
+
+            Ok(Duplicate {
+                percent,
+                correlation,
+            })
+        } else {
+            Err("no duplicate".into())
+        }
+    }
+}
+
 /// REORDERING := reorder PERCENT [ CORRELATION ] [ gap DISTANCE ]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct Reorder {
     percent: Percentage,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -224,8 +391,46 @@ impl Control for Reorder {
     }
 }
 
+lazy_static! {
+    static ref REORDER_REGEX: Regex =
+        Regex::new(r"reorder\s(?P<percent>[\d\.]+)%(\s(?P<correlation>[\d\.]+)%)?(.*\sgap\s(?P<distance>[\d]+))?")
+            .unwrap();
+}
+
+impl FromStr for Reorder {
+    type Err = Exception;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(captures) = REORDER_REGEX.captures(s) {
+            let percent: Percentage = captures
+                .name("percent")
+                .ok_or("get duplicate percent error")?
+                .as_str()
+                .parse()?;
+
+            let correlation: Option<Percentage> = match captures.name("correlation") {
+                Some(s) => s.as_str().parse().ok(),
+                None => None,
+            };
+
+            let distance: Option<u32> = match captures.name("distance") {
+                Some(s) => s.as_str().parse().ok(),
+                None => None,
+            };
+
+            Ok(Reorder {
+                percent,
+                correlation,
+                distance,
+            })
+        } else {
+            Err("no duplicate".into())
+        }
+    }
+}
+
 /// RATE := rate RATE [ PACKETOVERHEAD [ CELLSIZE [ CELLOVERHEAD ]]]]
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 struct Rate {
     rate: u64,
     // TODO: [ PACKETOVERHEAD [ CELLSIZE [ CELLOVERHEAD ]]
@@ -233,7 +438,40 @@ struct Rate {
 
 impl Control for Rate {
     fn to_args(&self) -> Vec<String> {
-        vec!["rate".into(), format!("{}kbit", self.rate)]
+        vec!["rate".into(), format!("{}mbps", self.rate)]
+    }
+}
+
+lazy_static! {
+    static ref RATE_REGEX: Regex =
+        Regex::new(r"rate\s(?P<number>[\d\.]+)(?P<unit>[KMGT]?bit)").unwrap();
+}
+
+impl FromStr for Rate {
+    type Err = Exception;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(captures) = RATE_REGEX.captures(s) {
+            let number: u64 = captures
+                .name("number")
+                .ok_or("get rate number error")?
+                .as_str()
+                .parse()?;
+
+            let rate = match captures.name("unit").ok_or("get rate unit error")?.as_str() {
+                "bit" => Some(number),
+                "Kbit" => number.checked_mul(1000),
+                "Mbit" => number.checked_mul(1000_000),
+                "Gbit" => number.checked_mul(1000_000_000),
+                "Tbps" => number.checked_mul(1000_000_000_000),
+                unit => return Err(format!("error unit: {}", unit).into()),
+            }
+            .unwrap_or(u64::max_value());
+
+            Ok(Rate { rate })
+        } else {
+            Err("no rate".into())
+        }
     }
 }
 
@@ -242,7 +480,7 @@ impl Control for Rate {
 //       paretonormal | FILE } DELAY JITTER }
 //                    [ packets PACKETS ] [ bytes BYTES ]
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Controls {
     #[serde(skip_serializing_if = "Option::is_none")]
     limit: Option<Limit>,
@@ -274,13 +512,6 @@ impl Default for Controls {
     }
 }
 
-impl Controls {
-    pub fn is_valid(&self) -> bool {
-        // to use reordering, a delay option must be specified.
-        self.reorder.is_none() || self.delay.is_some()
-    }
-}
-
 impl Control for Controls {
     fn to_args(&self) -> Vec<String> {
         let mut v = Vec::new();
@@ -301,9 +532,11 @@ impl Control for Controls {
             v.append(&mut duplicate.to_args());
         }
 
-        if let Some(reorder) = &self.reorder {
-            // need delay
-            v.append(&mut reorder.to_args());
+        if self.delay.is_some() {
+            if let Some(reorder) = &self.reorder {
+                // to use reordering, a delay option must be specified.
+                v.append(&mut reorder.to_args());
+            }
         }
 
         if let Some(corrupt) = &self.corrupt {
@@ -318,6 +551,16 @@ impl Control for Controls {
     }
 }
 
+impl FromStr for Controls {
+    type Err = Exception;
+
+    fn from_str(_s: &str) -> Result<Self, Self::Err> {
+        // tc qdisc show dev br-lan
+        // qdisc netem 8018: root refcnt 2 limit 1000 delay 10.0ms loss 0.1% 11% duplicate 0.1% 12% reorder 10% 55% corrupt 0.3% 30% rate 10Mbit ecn  gap 5
+        unimplemented!()
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum NetEm {
@@ -327,10 +570,10 @@ pub enum NetEm {
         controls: Controls,
     },
     #[serde(rename = "show")]
-    Show {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        interface: Option<String>,
-    },
+    Show { interface: String },
+    // list all names of interfaces
+    #[serde(rename = "list")]
+    List,
     #[serde(rename = "reset")]
     Reset { interface: String },
 }
@@ -338,56 +581,46 @@ pub enum NetEm {
 impl NetEm {
     pub async fn execute(&self) -> Message {
         println!("execute {:?}", self);
-        match self.get_args() {
-            Ok(args) => match PsCommand::new("tc").args(args).output().await {
-                Ok(output) => match output.status.code() {
-                    Some(code) => {
-                        if code == 0 {
-                            match self {
-                                NetEm::Show { interface: _ } => {
-                                    match String::from_utf8(output.stdout) {
-                                        Ok(stdout) => Message::Data {
-                                            interfaces: stdout
-                                                .lines()
-                                                .map(|s| s.to_owned())
-                                                .collect(),
-                                        },
-                                        Err(e) => Message::err_server(format!(
-                                            "Process output decode(utf8) error: {}",
-                                            e
-                                        )),
-                                    }
-                                }
-                                _ => Message::Ok,
-                            }
-                        } else {
-                            let description = match String::from_utf8(output.stderr) {
-                                Ok(stderr) => {
-                                    format!("Exit with status code: {}, stderr: {}", code, stderr)
-                                }
-                                Err(_) => format!("Exit with status code: {}", code),
-                            };
-                            Message::err_server(description)
+        match PsCommand::new("tc").args(self.to_args()).output().await {
+            Ok(output) => match output.status.code() {
+                Some(code) => {
+                    if code == 0 {
+                        match self {
+                            NetEm::Show { .. } => match String::from_utf8(output.stdout) {
+                                Ok(stdout) => Message::Data {
+                                    interfaces: stdout.lines().map(|s| s.to_owned()).collect(),
+                                },
+                                Err(e) => Message::err_server(format!(
+                                    "Process output decode(utf8) error: {}",
+                                    e
+                                )),
+                            },
+                            _ => Message::Ok,
                         }
+                    } else {
+                        let description = match String::from_utf8(output.stderr) {
+                            Ok(stderr) => {
+                                format!("Exit with status code: {}, stderr: {}", code, stderr)
+                            }
+                            Err(_) => format!("Exit with status code: {}", code),
+                        };
+                        Message::err_server(description)
                     }
-                    None => Message::err_server("Process killed by signal".to_owned()),
-                },
-                Err(e) => Message::err_server(format!("Command error: {}", e)),
+                }
+                None => Message::err_server("Process killed by signal".to_owned()),
             },
-            Err(e) => Message::err_client(format!("{}", e)),
+            Err(e) => Message::err_server(format!("Command error: {}", e)),
         }
     }
+}
 
-    pub fn get_args(&self) -> WeoResult<Vec<String>> {
+impl Control for NetEm {
+    fn to_args(&self) -> Vec<String> {
         match self {
             NetEm::Set {
                 interface,
                 controls,
             } => {
-                if !controls.is_valid() {
-                    return Err("to use reordering, a delay option must be specified".into());
-                }
-
                 // tc qdisc replace dev <INTERFACE> root netem delay 100ms 10ms loss 1% 30% duplicate 1% reorder 10% 50% corrupt 0.2%
                 let mut args = vec![
                     "qdisc".into(),
@@ -400,36 +633,29 @@ impl NetEm {
 
                 args.append(&mut controls.to_args());
 
-                Ok(args)
+                args
             }
-            NetEm::Show { interface: if_op } => {
-                match if_op {
-                    Some(interface) => {
-                        // tc qdisc show dev <INTERFACE>
-                        Ok(vec![
-                            "qdisc".into(),
-                            "show".into(),
-                            "dev".into(),
-                            interface.into(),
-                        ])
-                    }
-                    None => {
-                        // tc qdisc show
-                        Ok(vec!["qdisc".into(), "show".into()])
-                    }
-                }
+            NetEm::Show { interface } => {
+                // tc qdisc show dev <INTERFACE>
+                vec![
+                    "qdisc".into(),
+                    "show".into(),
+                    "dev".into(),
+                    interface.into(),
+                ]
             }
             NetEm::Reset { interface } => {
                 // tc qdisc del dev <INTERFACE> root netem
-                Ok(vec![
+                vec![
                     "qdisc".into(),
                     "del".into(),
                     "dev".into(),
                     interface.into(),
                     "root".into(),
                     "netem".into(),
-                ])
+                ]
             }
+            NetEm::List => vec!["qdisc".into(), "show".into()],
         }
     }
 }
@@ -468,10 +694,10 @@ pub fn test_netem() {
         controls: Controls {
             limit: Some(Limit { packets: 1000 }),
             delay: Some(Delay {
-                time: 10,
-                jitter: Some(2),
+                time: 10.0,
+                jitter: Some(2.0),
                 correlation: Some(50.0),
-                distribution: Some(Distribution::Uniform),
+                distribution: None,
             }),
             loss: Some(Loss {
                 percent: 0.1,
@@ -496,21 +722,73 @@ pub fn test_netem() {
     };
 
     let show = NetEm::Show {
-        interface: Some("br-lan".into()),
+        interface: "br-lan".into(),
     };
 
-    let show_all = NetEm::Show { interface: None };
+    let list = NetEm::List;
 
     let reset = NetEm::Reset {
         interface: "br-lan".into(),
     };
 
     let print = |ne: &NetEm| {
-        println!("{} \n=> tc {}", serde_json::to_string_pretty(&ne).unwrap(), ne.get_args().unwrap_or_else(|_| Vec::new()).join(" "));
+        println!(
+            "{} \n=> tc {}",
+            serde_json::to_string_pretty(&ne).unwrap(),
+            ne.to_args().join(" ")
+        );
     };
 
     print(&control);
     print(&show);
-    print(&show_all);
+    print(&list);
     print(&reset);
+}
+
+#[test]
+fn test_regex() -> crate::error::WeoResult<()> {
+    let is_netem = regex::Regex::new(r"^qdisc\snetem\s\d+:\sroot\srefcnt\s\d+\s.*")?;
+
+    let output = "qdisc netem 8018: root refcnt 2 limit 1000 delay 10.0ms  2.0ms 50% loss 0.1% 11% duplicate 0.1% 12% reorder 10% 55% corrupt 0.3% 30% rate 10Mbit ecn  gap 5";
+
+    assert!(is_netem.is_match(output));
+
+    let start = std::time::Instant::now();
+
+    let limit = output.parse::<Limit>()?;
+    println!("{:?}", limit);
+
+    let delay = output.parse::<Delay>()?;
+    println!("{:?}", delay);
+
+    let loss = output.parse::<Loss>()?;
+    println!("{:?}", loss);
+
+    let duplicate = output.parse::<Duplicate>()?;
+    println!("{:?}", duplicate);
+
+    let reorder = output.parse::<Reorder>()?;
+    println!("{:?}", reorder);
+
+    let corrupt = output.parse::<Corrupt>()?;
+    println!("{:?}", corrupt);
+
+    let rate = output.parse::<Rate>()?;
+    println!("{:?}", rate);
+
+    let controls = Controls {
+        limit: Some(limit),
+        delay: Some(delay),
+        loss: Some(loss),
+        corrupt: Some(corrupt),
+        duplicate: Some(duplicate),
+        reorder: Some(reorder),
+        rate: Some(rate),
+    };
+
+    println!("{}", serde_json::to_string_pretty(&controls)?);
+
+    println!("{:?}", start.elapsed());
+
+    Ok(())
 }
