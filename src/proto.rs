@@ -109,6 +109,7 @@ impl Decoder for Http {
         if version != 1 {
             return Err(io::Error::new(io::ErrorKind::Other, "only HTTP/1.1 accepted").into());
         }
+
         let data = src.split_to(amt).freeze();
         let mut ret = Request::builder();
         ret.method(&data[method.0..method.1]);
@@ -127,6 +128,11 @@ impl Decoder for Http {
             Some(headers_ref) => match headers_ref.get(CONTENT_LENGTH) {
                 Some(length) => {
                     let body_len: usize = length.to_str()?.parse()?;
+
+                    if body_len > src.len() {
+                        return Ok(None);
+                    }
+
                     let body = src.split_to(body_len).freeze();
                     Ok(Some(
                         ret.body(String::from_utf8(body.to_vec())?)

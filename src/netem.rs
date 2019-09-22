@@ -55,7 +55,7 @@ impl Control for Limit {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 enum Distribution {
     #[serde(rename = "uniform")]
     Uniform,
@@ -65,6 +65,18 @@ enum Distribution {
     Pareto,
     #[serde(rename = "paretonormal")]
     ParetoNormal,
+}
+
+impl From<Distribution> for String {
+    fn from(distribution: Distribution) -> Self {
+        match distribution {
+            Distribution::Uniform => "uniform",
+            Distribution::Normal => "normal",
+            Distribution::Pareto => "pareto",
+            Distribution::ParetoNormal => "paretonormal",
+        }
+        .to_string()
+    }
 }
 
 /// DELAY := delay TIME [ JITTER [ CORRELATION ]]]
@@ -93,6 +105,12 @@ impl Control for Delay {
                 v.push(correlation.to_pct_string());
             }
         }
+
+        if let Some(distribution) = self.distribution {
+            v.push("distribution".into());
+            v.push(distribution.into());
+        }
+
         v
     }
 }
@@ -113,8 +131,9 @@ struct Loss {
 impl Control for Loss {
     fn to_args(&self) -> Vec<String> {
         let mut v = Vec::with_capacity(2);
-
         v.push("loss".into());
+
+        v.push("random".into());
         v.push(self.percent.to_pct_string());
 
         if let Some(random) = self.correlation {
@@ -338,7 +357,13 @@ impl NetEm {
                                 _ => Message::Ok,
                             }
                         } else {
-                            Message::err_server(format!("Exit with status code: {}", code))
+                            let description = match String::from_utf8(output.stderr) {
+                                Ok(stderr) => {
+                                    format!("Exit with status code: {}, stderr: {}", code, stderr)
+                                }
+                                Err(_) => format!("Exit with status code: {}", code),
+                            };
+                            Message::err_server(description)
                         }
                     }
                     None => Message::err_server("Process killed by signal".to_owned()),
@@ -441,8 +466,8 @@ pub fn test_netem() {
             delay: Some(Delay {
                 time: 10,
                 jitter: Some(2),
-                correlation: None,
-                distribution: Some(Distribution::Normal),
+                correlation: Some(50.0),
+                distribution: Some(Distribution::Uniform),
             }),
             loss: Some(Loss {
                 percent: 0.1,
