@@ -310,6 +310,10 @@ impl Control for Controls {
             v.append(&mut corrupt.to_args());
         }
 
+        if let Some(rate) = &self.rate {
+            v.append(&mut rate.to_args());
+        }
+
         v
     }
 }
@@ -501,24 +505,12 @@ pub fn test_netem() {
         interface: "br-lan".into(),
     };
 
-    println!("{}", serde_json::to_string(&control).unwrap());
-    println!(
-        "tc {}",
-        control.get_args().unwrap_or_else(|_| Vec::new()).join(" ")
-    );
-    println!("{}", serde_json::to_string(&show).unwrap());
-    println!(
-        "tc {}",
-        show.get_args().unwrap_or_else(|_| Vec::new()).join(" ")
-    );
-    println!("{}", serde_json::to_string(&show_all).unwrap());
-    println!(
-        "tc {}",
-        show_all.get_args().unwrap_or_else(|_| Vec::new()).join(" ")
-    );
-    println!("{}", serde_json::to_string(&reset).unwrap());
-    println!(
-        "tc {}",
-        reset.get_args().unwrap_or_else(|_| Vec::new()).join(" ")
-    );
+    let print = |ne: &NetEm| {
+        println!("{} \n=> tc {}", serde_json::to_string_pretty(&ne).unwrap(), ne.get_args().unwrap_or_else(|_| Vec::new()).join(" "));
+    };
+
+    print(&control);
+    print(&show);
+    print(&show_all);
+    print(&reset);
 }
