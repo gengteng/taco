@@ -555,16 +555,6 @@ impl FromStr for Controls {
     type Err = Exception;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-
-        lazy_static! {
-            static ref IS_NETEM: Regex = Regex::new(r"^qdisc\snetem\s\d+:.*").unwrap();
-        }
-        // tc qdisc show dev br-lan
-        // qdisc netem 8018: root refcnt 2 limit 1000 delay 10.0ms loss 0.1% 11% duplicate 0.1% 12% reorder 10% 55% corrupt 0.3% 30% rate 10Mbit ecn  gap 5
-        if !IS_NETEM.is_match(s) {
-            return Err("Parse controls error: invalid input".into())
-        }
-
         let limit = Limit::from_str(s).ok();
         let delay = Delay::from_str(s).ok();
         let loss = Loss::from_str(s).ok();
@@ -580,7 +570,7 @@ impl FromStr for Controls {
             corrupt,
             duplicate,
             reorder,
-            rate
+            rate,
         })
     }
 }
