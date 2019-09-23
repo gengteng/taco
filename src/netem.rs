@@ -556,15 +556,7 @@ impl FromStr for Controls {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if !s.starts_with("qdisc netem") {
-            return Ok(Controls {
-                limit: None,
-                delay: None,
-                loss: None,
-                corrupt: None,
-                duplicate: None,
-                reorder: None,
-                rate: None
-            });
+            return Ok(Controls::default());
         }
 
         let limit = Limit::from_str(s).ok();
