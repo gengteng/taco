@@ -596,8 +596,9 @@ fn output_to_interfaces(output: &str) -> Vec<String> {
 
 impl NetEm {
     pub async fn execute(&self) -> Output {
-        println!("execute {:?}", self);
-        match PsCommand::new("tc").args(self.to_args()).output().await {
+        let args = self.to_args();
+        println!("run => tc {:?}", args.join(" "));
+        match PsCommand::new("tc").args(args).output().await {
             Ok(output) => match output.status.code() {
                 Some(code) => {
                     if code == 0 {
