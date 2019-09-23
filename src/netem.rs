@@ -11,7 +11,7 @@ use crate::error::Exception;
 use regex::Regex;
 use serde_derive::{Deserialize, Serialize};
 use std::str::FromStr;
-use tokio_net::process::Command as PsCommand;
+use tokio_net::process::Command;
 
 type Percentage = f64;
 type Millisecond = f64;
@@ -612,7 +612,7 @@ impl NetEm {
     pub async fn execute(&self) -> Output {
         let args = self.to_args();
         println!("run => tc {}", args.join(" "));
-        match PsCommand::new("tc").args(args).output().await {
+        match Command::new("tc").args(args).output().await {
             Ok(output) => match output.status.code() {
                 Some(code) => {
                     if code == 0 {
