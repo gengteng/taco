@@ -597,14 +597,14 @@ fn output_to_interfaces(output: &str) -> Vec<String> {
 impl NetEm {
     pub async fn execute(&self) -> Output {
         let args = self.to_args();
-        println!("run => tc {:?}", args.join(" "));
+        println!("run => tc {}", args.join(" "));
         match PsCommand::new("tc").args(args).output().await {
             Ok(output) => match output.status.code() {
                 Some(code) => {
                     if code == 0 {
-                        match self {
-                            NetEm::Show { interface } => match String::from_utf8(output.stdout) {
-                                Ok(stdout) => match Controls::from_str(&stdout) {
+                        match String::from_utf8(output.stdout) {
+                            Ok(stdout) => match self {
+                                NetEm::Show { interface } => match Controls::from_str(&stdout) {
                                     Ok(controls) => Output::Controls {
                                         interface: interface.into(),
                                         controls,
@@ -614,19 +614,15 @@ impl NetEm {
                                         e
                                     )),
                                 },
-                                Err(e) => Output::err_server(format!(
-                                    "Process output decode(utf8) error: {}",
-                                    e
-                                )),
+                                NetEm::List => Output::Interfaces {
+                                    list: output_to_interfaces(&stdout),
+                                },
+                                _ => Output::Ok,
                             },
-                            NetEm::List => match String::from_utf8(output.stdout) {
-                                Ok(stdout) => Output::Interfaces(output_to_interfaces(&stdout)),
-                                Err(e) => Output::err_server(format!(
-                                    "Process output decode(utf8) error: {}",
-                                    e
-                                )),
-                            },
-                            _ => Output::Ok,
+                            Err(e) => Output::err_server(format!(
+                                "Process output decode(utf8) error: {}",
+                                e
+                            )),
                         }
                     } else {
                         let description = match String::from_utf8(output.stderr) {
@@ -702,7 +698,7 @@ pub enum Output {
         controls: Controls,
     },
     #[serde(rename = "interfaces")]
-    Interfaces(Vec<String>),
+    Interfaces { list: Vec<String> },
     #[serde(rename = "error")]
     Error { description: String, server: bool },
 }
