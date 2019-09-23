@@ -578,24 +578,54 @@ pub enum NetEm {
     Reset { interface: String },
 }
 
+fn output_to_interfaces(output: &str) -> Vec<String> {
+    lazy_static! {
+        static ref INTERFACE_REGEX: Regex =
+            Regex::new(r"^qdisc\s.*\s\d+:\sdev\s(?P<interface>.*)\sroot").unwrap();
+    }
+
+    output
+        .lines()
+        .map(|s| INTERFACE_REGEX.captures(s))
+        .filter_map(|o| o)
+        .map(|c| c.name("interface"))
+        .filter_map(|o| o)
+        .map(|m| m.as_str().to_owned())
+        .collect::<Vec<String>>()
+}
+
 impl NetEm {
-    pub async fn execute(&self) -> Message {
+    pub async fn execute(&self) -> Output {
         println!("execute {:?}", self);
         match PsCommand::new("tc").args(self.to_args()).output().await {
             Ok(output) => match output.status.code() {
                 Some(code) => {
                     if code == 0 {
                         match self {
-                            NetEm::Show { .. } => match String::from_utf8(output.stdout) {
-                                Ok(stdout) => Message::Data {
-                                    interfaces: stdout.lines().map(|s| s.to_owned()).collect(),
+                            NetEm::Show { interface } => match String::from_utf8(output.stdout) {
+                                Ok(stdout) => match Controls::from_str(&stdout) {
+                                    Ok(controls) => Output::Controls {
+                                        interface: interface.into(),
+                                        controls,
+                                    },
+                                    Err(e) => Output::err_server(format!(
+                                        "Parse output to contorls error: {}",
+                                        e
+                                    )),
                                 },
-                                Err(e) => Message::err_server(format!(
+                                Err(e) => Output::err_server(format!(
                                     "Process output decode(utf8) error: {}",
                                     e
                                 )),
                             },
-                            _ => Message::Ok,
+                            NetEm::List => match String::from_utf8(output.stdout) {
+                                Ok(stdout) => Output::Interfaces(output_to_interfaces(&stdout)),
+                                Err(e) => Output::err_server(format!(
+                                    "Process output decode(utf8) error: {}",
+                                    e
+                                )),
+                            },
+                            _ => Output::Ok,
                         }
                     } else {
                         let description = match String::from_utf8(output.stderr) {
@@ -604,12 +634,12 @@ impl NetEm {
                             }
                             Err(_) => format!("Exit with status code: {}", code),
                         };
-                        Message::err_server(description)
+                        Output::err_server(description)
                     }
                 }
-                None => Message::err_server("Process killed by signal".to_owned()),
+                None => Output::err_server("Process killed by signal".to_owned()),
             },
-            Err(e) => Message::err_server(format!("Command error: {}", e)),
+            Err(e) => Output::err_server(format!("Command error: {}", e)),
         }
     }
 }
@@ -662,25 +692,30 @@ impl Control for NetEm {
 
 #[derive(Serialize)]
 #[serde(tag = "status")]
-pub enum Message {
+pub enum Output {
     #[serde(rename = "ok")]
     Ok,
+    #[serde(rename = "controls")]
+    Controls {
+        interface: String,
+        controls: Controls,
+    },
+    #[serde(rename = "interfaces")]
+    Interfaces(Vec<String>),
     #[serde(rename = "error")]
     Error { description: String, server: bool },
-    #[serde(rename = "data")]
-    Data { interfaces: Vec<String> },
 }
 
-impl Message {
+impl Output {
     pub fn err_server(description: String) -> Self {
-        Message::Error {
+        Output::Error {
             description,
             server: true,
         }
     }
 
     pub fn err_client(description: String) -> Self {
-        Message::Error {
+        Output::Error {
             description,
             server: false,
         }
@@ -692,7 +727,7 @@ pub fn test_netem() {
     let control = NetEm::Set {
         interface: "br-lan".to_owned(),
         controls: Controls {
-            limit: Some(Limit { packets: 1000 }),
+            limit: Some(Limit { packets: 2000 }),
             delay: Some(Delay {
                 time: 10.0,
                 jitter: Some(2.0),
@@ -789,6 +824,16 @@ fn test_regex() -> crate::error::WeoResult<()> {
     println!("{}", serde_json::to_string_pretty(&controls)?);
 
     println!("{:?}", start.elapsed());
+
+    let list = r"qdisc noqueue 0: dev lo root refcnt 2
+qdisc fq_codel 0: dev eth0 root refcnt 2 limit 10240p flows 1024 quantum 1514 target 5.0ms interval 100.0ms memory_limit 4Mb ecn
+qdisc noqueue 0: dev br-lan root refcnt 2
+qdisc noqueue 0: dev eth0.1 root refcnt 2
+qdisc noqueue 0: dev eth0.2 root refcnt 2
+qdisc noqueue 0: dev wlan0 root refcnt 2
+qdisc noqueue 0: dev wlan1 root refcnt 2";
+
+    println!("{:?}", output_to_interfaces(list));
 
     Ok(())
 }

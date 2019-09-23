@@ -80,11 +80,10 @@ async fn respond(req: Request<String>, opts: Arc<WeoOpts>) -> WeoResult<Response
 
             match deserialize {
                 Ok(netem) => serde_json::to_string(&netem.execute().await)?.into(),
-                Err(e) => serde_json::to_string(&Message::err_client(format!(
-                    "deserialize error: {}",
-                    e
-                )))?
-                .into(),
+                Err(e) => {
+                    serde_json::to_string(&Output::err_client(format!("deserialize error: {}", e)))?
+                        .into()
+                }
             }
         }
         (&Method::GET, path) => {
