@@ -554,10 +554,34 @@ impl Control for Controls {
 impl FromStr for Controls {
     type Err = Exception;
 
-    fn from_str(_s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+
+        lazy_static! {
+            static ref IS_NETEM: Regex = Regex::new(r"^qdisc\snetem\s\d+:.*").unwrap();
+        }
         // tc qdisc show dev br-lan
         // qdisc netem 8018: root refcnt 2 limit 1000 delay 10.0ms loss 0.1% 11% duplicate 0.1% 12% reorder 10% 55% corrupt 0.3% 30% rate 10Mbit ecn  gap 5
-        unimplemented!()
+        if !IS_NETEM.is_match(s) {
+            return Err("Parse controls error: invalid input".into())
+        }
+
+        let limit = Limit::from_str(s).ok();
+        let delay = Delay::from_str(s).ok();
+        let loss = Loss::from_str(s).ok();
+        let duplicate = Duplicate::from_str(s).ok();
+        let reorder = Reorder::from_str(s).ok();
+        let corrupt = Corrupt::from_str(s).ok();
+        let rate = Rate::from_str(s).ok();
+
+        Ok(Controls {
+            limit,
+            delay,
+            loss,
+            corrupt,
+            duplicate,
+            reorder,
+            rate
+        })
     }
 }
 
@@ -779,7 +803,7 @@ pub fn test_netem() {
 
 #[test]
 fn test_regex() -> crate::error::WeoResult<()> {
-    let is_netem = regex::Regex::new(r"^qdisc\snetem\s\d+:\sroot\srefcnt\s\d+\s.*")?;
+    let is_netem = regex::Regex::new(r"^qdisc\snetem\s\d+:.*")?;
 
     let output = "qdisc netem 8018: root refcnt 2 limit 1000 delay 10.0ms  2.0ms 50% loss 0.1% 11% duplicate 0.1% 12% reorder 10% 55% corrupt 0.3% 30% rate 10Mbit ecn  gap 5";
 
