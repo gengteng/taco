@@ -24,6 +24,8 @@ impl Encoder for Http {
              Content-Length: {}\r\n\
              Accept-Ranges: bytes\r\n\
              Access-Control-Allow-Origin: *\r\n\
+             Access-Control-Allow-Headers: *\r\n\
+             Access-Control-Allow-Methods: *\r\n
              Connection: keep-alive\r\n\
              Date: {}\r\n\
              ",
