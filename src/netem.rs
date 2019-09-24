@@ -438,7 +438,7 @@ struct Rate {
 
 impl Control for Rate {
     fn to_args(&self) -> Vec<String> {
-        vec!["rate".into(), format!("{}bps", self.rate)]
+        vec!["rate".into(), format!("{}bit", self.rate)]
     }
 }
 
