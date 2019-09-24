@@ -463,7 +463,7 @@ impl FromStr for Rate {
                 "Kbit" => number.checked_mul(1000),
                 "Mbit" => number.checked_mul(1000_000),
                 "Gbit" => number.checked_mul(1000_000_000),
-                "Tbps" => number.checked_mul(1000_000_000_000),
+                "Tbit" => number.checked_mul(1000_000_000_000),
                 unit => return Err(format!("error unit: {}", unit).into()),
             }
             .unwrap_or(u64::max_value());
