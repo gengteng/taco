@@ -195,6 +195,7 @@ struct Loss {
     correlation: Option<Percentage>,
 
     // TODO: | state | gemodel
+    #[serde(default)]
     ecn: bool,
 }
 
