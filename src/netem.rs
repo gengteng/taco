@@ -599,7 +599,7 @@ pub enum NetEm {
 fn output_to_interfaces(output: &str) -> Vec<String> {
     lazy_static! {
         static ref INTERFACE_REGEX: Regex =
-            Regex::new(r"^qdisc\s.*\s\d+:\sdev\s(?P<interface>.*)\sroot").unwrap();
+            Regex::new(r"^qdisc\s.*:\sdev\s(?P<interface>.*)\sroot").unwrap();
     }
 
     output
