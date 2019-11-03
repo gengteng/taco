@@ -5,11 +5,9 @@ use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use http::header::CONTENT_TYPE;
 use http::{Method, Request, Response, StatusCode};
-use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::fs::File;
-use tokio::io::AsyncReadExt;
 use tokio::{
     codec::Framed,
     net::{TcpListener, TcpStream},
@@ -23,6 +21,8 @@ use error::*;
 mod netem;
 use netem::*;
 mod utils;
+use crate::proto::{Http, Resp};
+use tokio::io::AsyncReadExt;
 use utils::*;
 
 #[tokio::main]
@@ -59,8 +59,12 @@ async fn process(stream: TcpStream, opts: Arc<WeoOpts>) -> WeoResult<()> {
     while let Some(request) = transport.next().await {
         match request {
             Ok(request) => {
-                let response = respond(request, opts.clone()).await?;
-                transport.send(response).await?;
+                let (resp, file) = respond(request, opts.clone()).await?;
+                transport.send(resp).await?;
+
+                if let Some(file) = file {
+                    send_file(file, &mut transport).await?;
+                }
             }
             Err(e) => return Err(e),
         }
@@ -69,22 +73,44 @@ async fn process(stream: TcpStream, opts: Arc<WeoOpts>) -> WeoResult<()> {
     Ok(())
 }
 
-async fn respond(req: Request<String>, opts: Arc<WeoOpts>) -> WeoResult<Response<Bytes>> {
+async fn send_file(mut file: File, transport: &mut Framed<TcpStream, Http>) -> WeoResult<()> {
+    let mut buff = [0u8; 1024];
+    loop {
+        match file.read(&mut buff).await {
+            Ok(size) => {
+                if size == 0 {
+                    break;
+                } else {
+                    transport
+                        .send(Resp::FileContent(Bytes::from(&buff[0..size])))
+                        .await?;
+                }
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    Ok(())
+}
+
+async fn respond(req: Request<String>, opts: Arc<WeoOpts>) -> WeoResult<(Resp, Option<File>)> {
     let mut response = Response::builder();
 
-    let body = match (req.method(), req.uri().path()) {
+    let result = match (req.method(), req.uri().path()) {
         (&Method::POST, "/api") => {
             response.header(CONTENT_TYPE, mime::APPLICATION_JSON.as_ref());
 
             let deserialize: Result<NetEm, _> = serde_json::from_str(req.body());
 
-            match deserialize {
+            let body = match deserialize {
                 Ok(netem) => serde_json::to_string(&netem.execute().await)?.into(),
                 Err(e) => {
                     serde_json::to_string(&Output::err_client(format!("deserialize error: {}", e)))?
                         .into()
                 }
-            }
+            };
+
+            (Resp::Complete(response.body(body)?), None)
         }
         (&Method::GET, path) => {
             let path = if path.is_empty() || path == "/" {
@@ -100,25 +126,27 @@ async fn respond(req: Request<String>, opts: Arc<WeoOpts>) -> WeoResult<Response
             let open = File::open(path).await;
 
             match open {
-                Ok(mut file) => {
-                    let mut content = Vec::with_capacity(file.metadata().await?.len() as usize);
-                    file.read_to_end(&mut content).await?;
-                    Bytes::from(content)
-                }
+                Ok(file) => match file.metadata().await {
+                    Ok(metadata) => (
+                        Resp::FileHeader(response.body(())?, metadata.len()),
+                        Some(file),
+                    ),
+                    Err(_) => {
+                        response.status(StatusCode::NOT_FOUND);
+                        (Resp::Complete(response.body(Bytes::new())?), None)
+                    }
+                },
                 Err(_) => {
                     response.status(StatusCode::NOT_FOUND);
-                    Bytes::new()
+                    (Resp::Complete(response.body(Bytes::new())?), None)
                 }
             }
         }
         _ => {
             response.status(StatusCode::NOT_FOUND);
-            Bytes::new()
+            (Resp::Complete(response.body(Bytes::new())?), None)
         }
     };
-    let response = response
-        .body(body)
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
-    Ok(response)
+    Ok(result)
 }

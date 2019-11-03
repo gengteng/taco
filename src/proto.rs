@@ -1,48 +1,75 @@
 use crate::Exception;
 use bytes::{Bytes, BytesMut};
 use http::header::CONTENT_LENGTH;
-use http::{HeaderValue, Request, Response};
+use http::{HeaderMap, HeaderValue, Request, Response};
 use std::{fmt, io};
 use tokio::codec::{Decoder, Encoder};
 
 pub struct Http;
+pub enum Resp {
+    Complete(Response<Bytes>),
+    FileHeader(Response<()>, u64),
+    FileContent(Bytes),
+}
 
 /// Implementation of encoding an HTTP response into a `BytesMut`, basically
 /// just writing out an HTTP/1.1 response.
 impl Encoder for Http {
-    type Item = Response<Bytes>;
+    type Item = Resp;
     type Error = Exception;
 
-    fn encode(&mut self, item: Response<Bytes>, dst: &mut BytesMut) -> Result<(), Exception> {
+    fn encode(&mut self, item: Resp, dst: &mut BytesMut) -> Result<(), Exception> {
         use std::fmt::Write;
 
-        write!(
-            BytesWrite(dst),
-            "\
-             HTTP/1.1 {}\r\n\
-             Server: weo\r\n\
-             Content-Length: {}\r\n\
-             Accept-Ranges: bytes\r\n\
-             Access-Control-Allow-Origin: *\r\n\
-             Access-Control-Allow-Headers: *\r\n\
-             Access-Control-Allow-Methods: *\r\n\
-             Connection: keep-alive\r\n\
-             Date: {}\r\n\
-             ",
-            item.status(),
-            item.body().len(),
-            date::now()
-        )?;
+        match item {
+            Resp::Complete(response) => {
+                write!(
+                    BytesWrite(dst),
+                    "\
+                     HTTP/1.1 {}\r\n\
+                     Server: weo\r\n\
+                     Content-Length: {}\r\n\
+                     Accept-Ranges: bytes\r\n\
+                     Access-Control-Allow-Origin: *\r\n\
+                     Access-Control-Allow-Headers: *\r\n\
+                     Access-Control-Allow-Methods: *\r\n\
+                     Connection: keep-alive\r\n\
+                     Date: {}\r\n\
+                     ",
+                    response.status(),
+                    response.body().len(),
+                    date::now()
+                )?;
 
-        for (k, v) in item.headers() {
-            dst.extend_from_slice(k.as_str().as_bytes());
-            dst.extend_from_slice(b": ");
-            dst.extend_from_slice(v.as_bytes());
-            dst.extend_from_slice(b"\r\n");
+                extend_dst(dst, response.headers());
+
+                dst.extend_from_slice(response.body().as_ref());
+            }
+            Resp::FileHeader(response, file_size) => {
+                write!(
+                    BytesWrite(dst),
+                    "\
+                     HTTP/1.1 {}\r\n\
+                     Server: weo\r\n\
+                     Content-Length: {}\r\n\
+                     Accept-Ranges: bytes\r\n\
+                     Access-Control-Allow-Origin: *\r\n\
+                     Access-Control-Allow-Headers: *\r\n\
+                     Access-Control-Allow-Methods: *\r\n\
+                     Connection: keep-alive\r\n\
+                     Date: {}\r\n\
+                     ",
+                    response.status(),
+                    file_size,
+                    date::now()
+                )?;
+
+                extend_dst(dst, response.headers());
+            }
+            Resp::FileContent(bytes) => {
+                dst.extend_from_slice(bytes.as_ref());
+            }
         }
-
-        dst.extend_from_slice(b"\r\n");
-        dst.extend_from_slice(item.body().as_ref());
 
         return Ok(());
 
@@ -60,6 +87,17 @@ impl Encoder for Http {
             fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> fmt::Result {
                 fmt::write(self, args)
             }
+        }
+
+        fn extend_dst(dst: &mut BytesMut, headers: &HeaderMap<HeaderValue>) {
+            for (k, v) in headers {
+                dst.extend_from_slice(k.as_str().as_bytes());
+                dst.extend_from_slice(b": ");
+                dst.extend_from_slice(v.as_bytes());
+                dst.extend_from_slice(b"\r\n");
+            }
+
+            dst.extend_from_slice(b"\r\n");
         }
     }
 }
@@ -89,21 +127,21 @@ impl Decoder for Http {
                 httparse::Status::Partial => return Ok(None),
             };
 
-            let toslice = |a: &[u8]| {
+            let to_slice = |a: &[u8]| {
                 let start = a.as_ptr() as usize - src.as_ptr() as usize;
                 assert!(start < src.len());
                 (start, start + a.len())
             };
 
             for (i, header) in r.headers.iter().enumerate() {
-                let k = toslice(header.name.as_bytes());
-                let v = toslice(header.value);
+                let k = to_slice(header.name.as_bytes());
+                let v = to_slice(header.value);
                 headers[i] = Some((k, v));
             }
 
             (
-                toslice(r.method.unwrap().as_bytes()),
-                toslice(r.path.unwrap().as_bytes()),
+                to_slice(r.method.unwrap().as_bytes()),
+                to_slice(r.path.unwrap().as_bytes()),
                 r.version.unwrap(),
                 amt,
             )
