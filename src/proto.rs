@@ -3,7 +3,7 @@ use bytes::{Bytes, BytesMut};
 use http::header::CONTENT_LENGTH;
 use http::{HeaderMap, HeaderValue, Request, Response};
 use std::{fmt, io};
-use tokio::codec::{Decoder, Encoder};
+use tokio_util::codec::{Decoder, Encoder};
 
 pub struct Http;
 pub enum Resp {
@@ -14,8 +14,7 @@ pub enum Resp {
 
 /// Implementation of encoding an HTTP response into a `BytesMut`, basically
 /// just writing out an HTTP/1.1 response.
-impl Encoder for Http {
-    type Item = Resp;
+impl Encoder<Resp> for Http {
     type Error = Exception;
 
     fn encode(&mut self, item: Resp, dst: &mut BytesMut) -> Result<(), Exception> {
@@ -151,20 +150,20 @@ impl Decoder for Http {
         }
 
         let data = src.split_to(amt).freeze();
-        let mut ret = Request::builder();
-        ret.method(&data[method.0..method.1]);
-        ret.uri(data.slice(path.0, path.1));
-        ret.version(http::Version::HTTP_11);
+        let mut builder = Request::builder()
+            .method(&data[method.0..method.1])
+            .uri(String::from_utf8(data.slice(path.0..path.1).to_vec())?)
+            .version(http::Version::HTTP_11);
         for header in headers.iter() {
             let (k, v) = match *header {
                 Some((ref k, ref v)) => (k, v),
                 None => break,
             };
-            let value = unsafe { HeaderValue::from_shared_unchecked(data.slice(v.0, v.1)) };
-            ret.header(&data[k.0..k.1], value);
+            let value = HeaderValue::from_bytes(&data.slice(v.0..v.1))?;
+            builder = builder.header(&data[k.0..k.1], value);
         }
 
-        match ret.headers_ref() {
+        match builder.headers_ref() {
             Some(headers_ref) => match headers_ref.get(CONTENT_LENGTH) {
                 Some(length) => {
                     let body_len: usize = length.to_str()?.parse()?;
@@ -175,13 +174,14 @@ impl Decoder for Http {
 
                     let body = src.split_to(body_len).freeze();
                     Ok(Some(
-                        ret.body(String::from_utf8(body.to_vec())?)
+                        builder
+                            .body(String::from_utf8(body.to_vec())?)
                             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
                     ))
                 }
-                None => Ok(Some(ret.body(String::new())?)),
+                None => Ok(Some(builder.body(String::new())?)),
             },
-            None => Ok(Some(ret.body(String::new())?)),
+            None => Ok(Some(builder.body(String::new())?)),
         }
     }
 }
@@ -191,7 +191,7 @@ mod date {
     use std::fmt::{self, Write};
     use std::str;
 
-    use time::{self, Duration};
+    use chrono::{DateTime, Duration, Local, TimeZone};
 
     pub struct Now(());
 
@@ -221,20 +221,20 @@ mod date {
     struct LastRenderedNow {
         bytes: [u8; 128],
         amt: usize,
-        next_update: time::Timespec,
+        next_update: DateTime<Local>,
     }
 
     thread_local!(static LAST: RefCell<LastRenderedNow> = RefCell::new(LastRenderedNow {
         bytes: [0; 128],
         amt: 0,
-        next_update: time::Timespec::new(0, 0),
+        next_update: Local.timestamp(0 ,0),
     }));
 
     impl fmt::Display for Now {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             LAST.with(|cache| {
                 let mut cache = cache.borrow_mut();
-                let now = time::get_time();
+                let now = Local::now();
                 if now >= cache.next_update {
                     cache.update(now);
                 }
@@ -248,11 +248,10 @@ mod date {
             str::from_utf8(&self.bytes[..self.amt]).unwrap()
         }
 
-        fn update(&mut self, now: time::Timespec) {
+        fn update(&mut self, now: DateTime<Local>) {
             self.amt = 0;
-            write!(LocalBuffer(self), "{}", time::at(now).rfc822()).unwrap();
+            write!(LocalBuffer(self), "{}", now.to_rfc2822()).unwrap();
             self.next_update = now + Duration::seconds(1);
-            self.next_update.nsec = 0;
         }
     }
 

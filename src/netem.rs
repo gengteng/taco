@@ -11,7 +11,7 @@ use crate::error::Exception;
 use regex::Regex;
 use serde_derive::{Deserialize, Serialize};
 use std::str::FromStr;
-use tokio_net::process::Command;
+use tokio::process::Command;
 
 type Percentage = f64;
 type Millisecond = f64;

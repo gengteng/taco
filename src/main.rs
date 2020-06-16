@@ -8,10 +8,7 @@ use http::{Method, Request, Response, StatusCode};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::fs::File;
-use tokio::{
-    codec::Framed,
-    net::{TcpListener, TcpStream},
-};
+use tokio::net::{TcpListener, TcpStream};
 
 mod opt;
 use opt::*;
@@ -23,6 +20,7 @@ use netem::*;
 mod utils;
 use crate::proto::{Http, Resp};
 use tokio::io::AsyncReadExt;
+use tokio_util::codec::Framed;
 use utils::*;
 
 #[tokio::main]
@@ -82,7 +80,7 @@ async fn send_file(mut file: File, transport: &mut Framed<TcpStream, Http>) -> W
                     break;
                 } else {
                     transport
-                        .send(Resp::FileContent(Bytes::from(&buff[0..size])))
+                        .send(Resp::FileContent(Bytes::copy_from_slice(&buff[0..size])))
                         .await?;
                 }
             }
@@ -98,7 +96,7 @@ async fn respond(req: Request<String>, opts: Arc<WeoOpts>) -> WeoResult<(Resp, O
 
     let result = match (req.method(), req.uri().path()) {
         (&Method::POST, "/api") => {
-            response.header(CONTENT_TYPE, mime::APPLICATION_JSON.as_ref());
+            response = response.header(CONTENT_TYPE, mime::APPLICATION_JSON.as_ref());
 
             let deserialize: Result<NetEm, _> = serde_json::from_str(req.body());
 
@@ -120,7 +118,7 @@ async fn respond(req: Request<String>, opts: Arc<WeoOpts>) -> WeoResult<(Resp, O
             };
 
             if let Some(mime) = get_mime(&path) {
-                response.header(CONTENT_TYPE, mime);
+                response = response.header(CONTENT_TYPE, mime);
             }
 
             let open = File::open(path).await;
@@ -131,21 +129,21 @@ async fn respond(req: Request<String>, opts: Arc<WeoOpts>) -> WeoResult<(Resp, O
                         Resp::FileHeader(response.body(())?, metadata.len()),
                         Some(file),
                     ),
-                    Err(_) => {
-                        response.status(StatusCode::NOT_FOUND);
-                        (Resp::Complete(response.body(Bytes::new())?), None)
-                    }
+                    Err(_) => (
+                        Resp::Complete(response.status(StatusCode::NOT_FOUND).body(Bytes::new())?),
+                        None,
+                    ),
                 },
-                Err(_) => {
-                    response.status(StatusCode::NOT_FOUND);
-                    (Resp::Complete(response.body(Bytes::new())?), None)
-                }
+                Err(_) => (
+                    Resp::Complete(response.status(StatusCode::NOT_FOUND).body(Bytes::new())?),
+                    None,
+                ),
             }
         }
-        _ => {
-            response.status(StatusCode::NOT_FOUND);
-            (Resp::Complete(response.body(Bytes::new())?), None)
-        }
+        _ => (
+            Resp::Complete(response.status(StatusCode::NOT_FOUND).body(Bytes::new())?),
+            None,
+        ),
     };
 
     Ok(result)
