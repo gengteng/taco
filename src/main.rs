@@ -1,150 +1,54 @@
-#[macro_use]
-extern crate lazy_static;
-
-use bytes::Bytes;
-use futures::{SinkExt, StreamExt};
-use http::header::CONTENT_TYPE;
-use http::{Method, Request, Response, StatusCode};
+use crate::netem::{NetEm, Output};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::routing::{get_service, post};
+use axum::{Json, Router, Server};
+use clap::Parser;
+use log::LevelFilter;
 use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::fs::File;
-use tokio::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
+use tower_http::services::ServeDir;
 
-mod opt;
-use opt::*;
-mod error;
-mod proto;
-use error::*;
 mod netem;
-use netem::*;
-mod utils;
-use crate::proto::{Http, Resp};
-use tokio::io::AsyncReadExt;
-use tokio_util::codec::Framed;
-use utils::*;
+
+#[derive(Debug, Parser)]
+#[clap(name = "taco")]
+struct Opts {
+    #[clap(short, long, default_value = "88")]
+    port: u16,
+    #[clap(short, long)]
+    web: PathBuf,
+    #[clap(short, long, default_value = "INFO")]
+    log_level: LevelFilter,
+}
 
 #[tokio::main]
-async fn main() -> WeoResult<()> {
-    let opts: WeoOpts = WeoOpts::from_args();
+async fn main() -> anyhow::Result<()> {
+    let Opts {
+        port,
+        web,
+        log_level,
+    } = Opts::parse();
 
-    println!("{:?}", opts);
+    env_logger::builder().filter_level(log_level).try_init()?;
 
-    let addr4 = SocketAddr::from(([0, 0, 0, 0], opts.port));
+    let router = Router::new()
+        .route("/api", post(api))
+        .fallback(get_service(ServeDir::new(web)).handle_error(handle_error));
 
-    let mut listener = TcpListener::bind(addr4).await?;
-    println!("Listening on: {}", opts.port);
-
-    let opts = Arc::new(opts);
-
-    while let Ok((stream, remote_addr)) = listener.accept().await {
-        let opts = opts.clone();
-        tokio::spawn(async move {
-            if let Err(e) = process(stream, opts.clone()).await {
-                println!(
-                    "failed to process connection from {}; error = {}",
-                    remote_addr, e
-                );
-            }
-        });
-    }
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    log::info!("Taco server is running on {}...", port);
+    Server::bind(&addr)
+        .serve(router.into_make_service())
+        .await?;
 
     Ok(())
 }
 
-async fn process(stream: TcpStream, opts: Arc<WeoOpts>) -> WeoResult<()> {
-    let mut transport = Framed::new(stream, proto::Http);
-
-    while let Some(request) = transport.next().await {
-        match request {
-            Ok(request) => {
-                let (resp, file) = respond(request, opts.clone()).await?;
-                transport.send(resp).await?;
-
-                if let Some(file) = file {
-                    send_file(file, &mut transport).await?;
-                }
-            }
-            Err(e) => return Err(e),
-        }
-    }
-
-    Ok(())
+async fn handle_error(err: std::io::Error) -> impl IntoResponse {
+    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
 }
 
-async fn send_file(mut file: File, transport: &mut Framed<TcpStream, Http>) -> WeoResult<()> {
-    let mut buff = [0u8; 1024];
-    loop {
-        match file.read(&mut buff).await {
-            Ok(size) => {
-                if size == 0 {
-                    break;
-                } else {
-                    transport
-                        .send(Resp::FileContent(Bytes::copy_from_slice(&buff[0..size])))
-                        .await?;
-                }
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
-
-    Ok(())
-}
-
-async fn respond(req: Request<String>, opts: Arc<WeoOpts>) -> WeoResult<(Resp, Option<File>)> {
-    let mut response = Response::builder();
-
-    let result = match (req.method(), req.uri().path()) {
-        (&Method::POST, "/api") => {
-            response = response.header(CONTENT_TYPE, mime::APPLICATION_JSON.as_ref());
-
-            let deserialize: Result<NetEm, _> = serde_json::from_str(req.body());
-
-            let body = match deserialize {
-                Ok(netem) => serde_json::to_string(&netem.execute().await)?.into(),
-                Err(e) => {
-                    serde_json::to_string(&Output::err_client(format!("deserialize error: {}", e)))?
-                        .into()
-                }
-            };
-
-            (Resp::Complete(response.body(body)?), None)
-        }
-        (&Method::GET, path) => {
-            let path = if path.is_empty() || path == "/" {
-                opts.root.join("index.html")
-            } else {
-                opts.root.join(&path[1..])
-            };
-
-            if let Some(mime) = get_mime(&path) {
-                response = response.header(CONTENT_TYPE, mime);
-            }
-
-            let open = File::open(path).await;
-
-            match open {
-                Ok(file) => match file.metadata().await {
-                    Ok(metadata) => (
-                        Resp::FileHeader(response.body(())?, metadata.len()),
-                        Some(file),
-                    ),
-                    Err(_) => (
-                        Resp::Complete(response.status(StatusCode::NOT_FOUND).body(Bytes::new())?),
-                        None,
-                    ),
-                },
-                Err(_) => (
-                    Resp::Complete(response.status(StatusCode::NOT_FOUND).body(Bytes::new())?),
-                    None,
-                ),
-            }
-        }
-        _ => (
-            Resp::Complete(response.status(StatusCode::NOT_FOUND).body(Bytes::new())?),
-            None,
-        ),
-    };
-
-    Ok(result)
+async fn api(Json(netem): Json<NetEm>) -> Json<Output> {
+    Json(netem.execute().await)
 }
